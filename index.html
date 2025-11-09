@@ -285,9 +285,97 @@
 
     <script>
         // ======================
+        // WEBHOOK CONFIGURATION
+        // ======================
+
+        /**
+         * CONFIGURATION INSTRUCTIONS:
+         *
+         * Replace 'YOUR_WEBHOOK_ID_HERE' with your actual Make.com webhook ID.
+         *
+         * To get your webhook URL:
+         * 1. Go to Make.com and create a new scenario
+         * 2. Add a "Webhooks > Custom webhook" trigger
+         * 3. Copy the webhook URL (it will look like: https://hook.us1.make.com/abc123xyz...)
+         * 4. Paste the full URL below
+         *
+         * Example:
+         * const WEBHOOK_URL = 'https://hook.us1.make.com/abc123xyz456';
+         *
+         * The webhook will receive JSON data with the following structure:
+         * {
+         *   "studentName": "John",
+         *   "profile": "Agreeableness:Low, Balance:High, Exploration:Low",
+         *   "profileKey": "A↓ B↑ E↓",
+         *   "responses": {
+         *     "step1": "My conflict style description...",
+         *     "step2_helps": "When my tendencies help...",
+         *     "step2_holds": "When they hold me back...",
+         *     "step3": "What I'll pay attention to...",
+         *     "scenario": "boss",
+         *     "scenarioResponse": "My reflection...",
+         *     "commitment": "What I'll do differently...",
+         *     "closing": "My closing thoughts..."
+         *   },
+         *   "milestone": "completed",
+         *   "currentStep": "complete",
+         *   "completedDate": "2024-01-15T10:30:00.000Z",
+         *   "timestamp": 1705318200000
+         * }
+         */
+        const WEBHOOK_URL = 'https://hook.us1.make.com/YOUR_WEBHOOK_ID_HERE';
+
+        // ======================
+        // UTILITY FUNCTIONS
+        // ======================
+
+        /**
+         * Safely sends data to Make.com webhook with proper JSON encoding
+         * Uses JSON.stringify which automatically handles all special characters including:
+         * - Quotes (both single and double)
+         * - Apostrophes
+         * - Newlines, tabs, and other whitespace
+         * - Backslashes
+         * - Unicode characters
+         *
+         * @param {Object} data - The data object to send
+         * @returns {Promise<Object>} Response from webhook
+         */
+        async function sendToWebhook(data) {
+            try {
+                // JSON.stringify automatically and correctly escapes all special characters
+                // No manual escaping needed - doing so would cause double-escaping
+                const payload = JSON.stringify(data);
+
+                // Validate JSON is well-formed (this will throw if data contains circular references, etc.)
+                JSON.parse(payload);
+
+                console.log('Webhook payload preview:', payload.substring(0, 200) + '...');
+
+                const response = await fetch(WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: payload
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Webhook returned status ${response.status}: ${response.statusText}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                console.error('Error sending data to webhook:', error);
+                // Don't throw - we don't want to break the user experience if webhook fails
+                return { success: false, error: error.message };
+            }
+        }
+
+        // ======================
         // STATE MANAGEMENT
         // ======================
-        
+
         const PROFILES = {
             'low-high-low': {
                 key: 'A↓ B↑ E↓',
@@ -1309,23 +1397,26 @@ You realize: this is low-stakes practice for workplace friction. How you handle 
                 
                 const btn = document.createElement('button');
                 btn.textContent = 'SUBMIT COMMITMENT';
-                btn.onclick = () => {
+                btn.onclick = async () => {
                     const response = document.getElementById('commitmentInput').value.trim();
                     if (response.length < 20) {
                         alert('Please write a specific commitment');
                         return;
                     }
-                    
+
                     this.state.responses.commitment = response;
                     this.state.step = 'profile-card';
                     this.state.saveState();
                     this.addMessage('user', response);
-                    
+
                     // Affirm concrete commitment
                     this.addMessage('bot', `
                         <p>Excellent commitment, ${this.state.studentName}. That's concrete and actionable. The key now is to actually try it in your next conflict situation and notice what happens.</p>
                     `);
-                    
+
+                    // Send milestone data to webhook (Step 4 completion)
+                    await this.submitToWebhook('step4_completed');
+
                     this.renderCurrentStep();
                 };
                 
@@ -1425,17 +1516,21 @@ You realize: this is low-stakes practice for workplace friction. How you handle 
                 
                 const btn = document.createElement('button');
                 btn.textContent = 'FINISH WORKSHOP';
-                btn.onclick = () => {
+                btn.onclick = async () => {
                     const response = document.getElementById('closingInput').value.trim();
                     if (response.length < 10) {
                         alert('Please share a brief closing thought');
                         return;
                     }
-                    
+
                     this.state.responses.closing = response;
                     this.state.step = 'complete';
                     this.state.saveState();
                     this.addMessage('user', response);
+
+                    // Send workshop completion data to webhook
+                    await this.submitToWebhook();
+
                     this.renderCurrentStep();
                 };
                 
@@ -1484,6 +1579,31 @@ You realize: this is low-stakes practice for workplace friction. How you handle 
                 this.inputArea.appendChild(resetBtn);
             }
 
+            async submitToWebhook(milestone = 'completed') {
+                // Prepare data payload with all user responses
+                const data = {
+                    studentName: this.state.studentName,
+                    profile: this.state.getProfileString(),
+                    profileKey: this.state.profile ? this.state.profile.key : '',
+                    responses: this.state.responses,
+                    milestone: milestone,
+                    currentStep: this.state.step,
+                    completedDate: new Date().toISOString(),
+                    timestamp: Date.now()
+                };
+
+                // Send to Make.com webhook
+                console.log(`Sending workshop data to webhook (${milestone})...`);
+                const result = await sendToWebhook(data);
+
+                if (result.success === false) {
+                    console.error('Failed to send data to webhook:', result.error);
+                    // Continue anyway - don't block user from completing workshop
+                } else {
+                    console.log('Successfully sent data to webhook');
+                }
+            }
+
             downloadData() {
                 const data = {
                     studentName: this.state.studentName,
@@ -1491,7 +1611,7 @@ You realize: this is low-stakes practice for workplace friction. How you handle 
                     responses: this.state.responses,
                     completedDate: new Date().toISOString()
                 };
-                
+
                 const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
